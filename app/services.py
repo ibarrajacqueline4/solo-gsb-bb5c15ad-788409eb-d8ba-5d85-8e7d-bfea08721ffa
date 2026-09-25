@@ -2034,21 +2034,42 @@ def _pick_for_run(
     旧批次的去重帧位置为 ``None``（位置为空），并列比较时排在有位置者之前。
 
     后向动态规划：cost[i][c] = 第 i 帧选候选 c 时，该帧起到段末的最少切换次数。
-    随后自段首贪心：每一步在保持最小总切换的候选中取 (导入顺序, 原始位置)
-    字典序最前者。候选已按导入顺序升序、同批至多一个候选（最早合格位置），
-    故并列即按帧号顺序逐帧比较批次原导入顺序、再比较原始位置。
+    转移不逐对比较相邻帧候选：每帧先汇总下一帧的“同批次代价表 + 全局最优与
+    次优（异批次）批次代价”，本帧每个候选 O(1) 完成转移，转移量随候选总数
+    线性增长（而非相邻候选数乘积）。随后自段首贪心：每一步在保持最小总切换的
+    候选中取 (导入顺序, 原始位置) 字典序最前者。候选已按导入顺序升序、同批
+    至多一个候选（最早合格位置），故并列即按帧号顺序逐帧比较批次原导入顺序、
+    再比较原始位置。
 
     返回与 ``run`` 等长、对齐的 (批次原导入顺序序号, 原始位置 | None) 序列。
     """
     # cost[i]：该帧每个候选对应的“本帧起到段末最少切换次数”，与候选同序
     cost: list[list[int]] = [[0] * len(candidates[f]) for f in run]
     for i in range(len(run) - 2, -1, -1):
-        cur = candidates[run[i]]
-        nxt = candidates[run[i + 1]]
-        for ci, (cur_order, _cur_pos) in enumerate(cur):
-            best = None
-            for ni, (nxt_order, _nxt_pos) in enumerate(nxt):
-                value = cost[i + 1][ni] + (0 if nxt_order == cur_order else 1)
+        # 下一帧汇总：same_cost[批次序号] = 该批次唯一候选的后缀代价；
+        # best1/best1_order 为全局最小代价及其批次序号，
+        # best2 为批次序号异于 best1_order 的最小代价（供与最优同批的候选转移）
+        same_cost: dict[int, int] = {}
+        best1: int | None = None
+        best1_order: int | None = None
+        best2: int | None = None
+        for (nxt_order, _nxt_pos), nxt_cost in zip(
+            candidates[run[i + 1]], cost[i + 1]
+        ):
+            same_cost[nxt_order] = nxt_cost
+            if best1 is None or nxt_cost < best1:
+                # 同帧候选批次序号互不相同，被挤下的旧最优必属其他批次，直接作次优
+                best2 = best1
+                best1 = nxt_cost
+                best1_order = nxt_order
+            elif nxt_order != best1_order and (best2 is None or nxt_cost < best2):
+                best2 = nxt_cost
+        for ci, (cur_order, _cur_pos) in enumerate(candidates[run[i]]):
+            # 同批次延续不切换；异批次取最优（最优与本候选同批时取次优）+ 1
+            diff_best = best2 if cur_order == best1_order else best1
+            best = same_cost.get(cur_order)
+            if diff_best is not None:
+                value = diff_best + 1
                 if best is None or value < best:
                     best = value
             cost[i][ci] = best  # 每帧至少一个候选，best 必不为 None
